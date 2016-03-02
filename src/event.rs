@@ -160,6 +160,12 @@ impl EventSet {
         EventSet(0x008)
     }
 
+    // Private
+    #[inline]
+    fn drop() -> EventSet {
+        EventSet(0x10)
+    }
+
     #[inline]
     pub fn all() -> EventSet {
         EventSet::readable() |
@@ -170,7 +176,7 @@ impl EventSet {
 
     #[inline]
     pub fn is_none(&self) -> bool {
-        self.0 == 0
+        (*self & !EventSet::drop()) == EventSet::none()
     }
 
     #[inline]
@@ -312,9 +318,34 @@ impl Event {
     }
 }
 
+/*
+ *
+ * ===== Mio internal helpers =====
+ *
+ */
+
+pub fn as_usize(events: EventSet) -> usize {
+    events.0
+}
+
+pub fn from_usize(events: usize) -> EventSet {
+    EventSet(events)
+}
+
+/// Returns true if the `EventSet` does not have any public OR private flags
+/// set.
+pub fn is_empty(events: EventSet) -> bool {
+    events.0 == 0
+}
+
+pub fn is_drop(events: EventSet) -> bool {
+    events.contains(EventSet::drop())
+}
+
 // Used internally to mutate an `Event` in place
 // Not used on all platforms
 #[allow(dead_code)]
 pub fn kind_mut(event: &mut Event) -> &mut EventSet {
     &mut event.kind
 }
+

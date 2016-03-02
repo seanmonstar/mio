@@ -81,6 +81,7 @@
 
 #![crate_name = "mio"]
 #![cfg_attr(unix, deny(warnings))]
+#![allow(dead_code, unused_variables, unused_assignments)]
 
 extern crate bytes;
 extern crate time;
