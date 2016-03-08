@@ -611,6 +611,8 @@ impl ReadinessQueue {
     }
 }
 
+unsafe impl Send for ReadinessQueue { }
+
 impl ReadinessNode {
     fn new(token: Token, interest: EventSet, opts: PollOpt) -> ReadinessNode {
         ReadinessNode {
