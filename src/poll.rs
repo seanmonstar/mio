@@ -85,7 +85,7 @@ struct ReadinessQueueInner {
     head_readiness: AtomicPtr<ReadinessNode>,
 
     // Hashed timer wheel for delayed readiness notifications
-    readiness_wheel: Vec<AtomicPtr<ReadinessNode>>,
+    readiness_wheel: Vec<Option<Box<ReadinessNode>>>,
 
     // Timer settings
     timer_tick_ms: u64,
@@ -293,6 +293,11 @@ impl Registration {
     }
 
     pub fn update(&self, poll: &Poll, interest: EventSet, opts: PollOpt) -> io::Result<()> {
+        // `&Poll` is passed in here in order to ensure that this function is
+        // only called from the thread that owns the `Poll` value. This is
+        // required because the function will mutate variables that are read
+        // from a call to `Poll::poll`.
+
         if !self.queue.identical(&poll.readiness_queue) {
             return Err(io::Error::new(io::ErrorKind::Other, "nope"));
         }
@@ -302,6 +307,13 @@ impl Registration {
 
         // If the node is currently ready, re-queue?
         if !event::is_empty(self.readiness()) {
+            // The releaxed ordering of `self.readiness()` is sufficient here.
+            // All mutations to readiness will immediately attempt to queue the
+            // node for processing. This means that this call to
+            // `queue_for_processing` is only intended to handle cases where
+            // the node was dequeued in `poll` and then has the interest
+            // changed, which means that the "newest" readiness value is
+            // already known by the current thread.
             self.queue_for_processing(None);
         }
 
@@ -309,6 +321,9 @@ impl Registration {
     }
 
     pub fn readiness(&self) -> EventSet {
+        // A relaxed ordering is sufficient here as a call to `readiness` is
+        // only meant as a hint to what the current value is. It should not be
+        // used for any synchronization.
         event::from_usize(self.node().events.load(Ordering::Relaxed))
     }
 
@@ -316,12 +331,15 @@ impl Registration {
         // First, process args
         let target_tick = self.queue.delay_target_tick(delay);
 
-        // First CAS in the new readiness using relaxed.
+        // First CAS in the new readiness using relaxed. `Release` ordering is
+        // used as this operation is permitted to be visible ad-hoc.
         self.node().events.swap(event::as_usize(ready), Ordering::Relaxed);
 
         // Setting readiness to none doesn't require any processing by the poll
         // instance, so there is no need to enqueue the node.
         if event::is_empty(ready) {
+            // It doesn't make sense to delay an "unset" readiness operation.
+            debug_assert!(convert::millis(delay) == 0, "the delay component is ignored when ready set is empty");
             return;
         }
 
@@ -329,16 +347,26 @@ impl Registration {
     }
 
     fn queue_for_processing(&self, target_tick: Option<Tick>) {
-        let mut curr;
+        // Use Relaxed ordering here as this load's ordering doesn't really
+        // matter. The `compare_and_swap` below will set the ordering.
+        let mut curr = self.node().queued.load(Ordering::Relaxed);
 
         // Queue the node for processing.
         loop {
-            curr = self.node().queued.load(Ordering::Relaxed);
             let next = (target_tick.unwrap_or(0) << 1) | NODE_QUEUED_FLAG;
 
-            if curr == self.node().queued.compare_and_swap(curr, next, Ordering::Release) {
+            // `Release` ensures that the `events` mutation is visible if this
+            // mutation is visible.
+            //
+            // `Acquire` ensures that a change to `head_readiness` made in the
+            // poll thread is visible if `queued` has been reset to zero.
+            let actual = self.node().queued.compare_and_swap(curr, next, Ordering::AcqRel);
+
+            if curr == actual {
                 break;
             }
+
+            curr = actual;
         }
 
         // If the queued flag was not initially set, then the current thread
@@ -374,7 +402,7 @@ impl ReadinessQueue {
             inner: Arc::new(UnsafeCell::new(ReadinessQueueInner {
                 head_all_nodes: None,
                 head_readiness: AtomicPtr::new(ptr::null_mut()),
-                readiness_wheel: (0..timer_wheel_size).map(|_| AtomicPtr::new(ptr::null_mut())).collect(),
+                readiness_wheel: (0..timer_wheel_size).map(|_| None).collect(),
                 timer_tick_ms: convert::millis(config.timer_tick_dur),
                 mask: timer_wheel_size as u64,
                 epoch: precise_time_ns(),
@@ -382,7 +410,7 @@ impl ReadinessQueue {
         }
     }
 
-    fn poll(&self, _dst: &mut Vec<Event>) {
+    fn poll(&mut self, dst: &mut Vec<Event>) {
         let ready = self.take_ready();
         let curr_tick = self.current_tick();
 
@@ -392,11 +420,15 @@ impl ReadinessQueue {
             let opts = node_ref.opts.get();
 
             // Atomically read queued. Use Acquire ordering to set a
-            // barrier before reading events
+            // barrier before reading events, which will be read using
+            // `Relaxed` ordering. Reading events w/ `Relaxed` is OK thanks to
+            // the acquire / release hand off on `queued`.
             let mut queued = node_ref.queued.load(Ordering::Acquire);
             let mut events = node_ref.poll_events();
             let mut target_tick;
 
+            // Enter a loop attempting to unset the "queued" bit or requeuing
+            // the node.
             loop {
                 target_tick = queued >> 1;
 
@@ -410,18 +442,22 @@ impl ReadinessQueue {
                 // If the drop flag is set though, the node is never queued
                 // again.
                 if event::is_drop(events) {
-                    // dropped nodes are always processed immediately
+                    // dropped nodes are always processed immediately. There is
+                    // also no need to unset the queued bit as the node should
+                    // not change anymore.
                     target_tick = curr_tick;
                     break;
                 } else if opts.is_edge() || event::is_empty(events) || curr_tick >= target_tick {
-                    // Set an acquire barrier as the events field will be
-                    // re-read immediately after to guard against an ABA
-                    // problem
+                    // An acquire barrier is set in order to re-read the
+                    // `events field. `Release` is not needed as we have not
+                    // mutated any field that we need to expose to the producer
+                    // thread.
                     let next = node_ref.queued.compare_and_swap(queued, 0, Ordering::Acquire);
 
                     // Re-read in order to ensure we have the latest value
                     // after having marked the registration has dequeued from
-                    // the readiness queue.
+                    // the readiness queue. Again, `Relaxed` is OK since we set
+                    // the barrier above.
                     events = node_ref.poll_events();
 
                     if queued == next {
@@ -434,7 +470,9 @@ impl ReadinessQueue {
                     // pushed back onto the queue.
                     //
                     // TODO: It would be better to build up a batch list that
-                    // requires a single CAS
+                    // requires a single CAS. Also, `Relaxed` ordering would be
+                    // OK here as the prepend only needs to be visible by the
+                    // current thread.
                     self.prepend_readiness_node(node.clone());
                     break;
                 }
@@ -450,7 +488,7 @@ impl ReadinessQueue {
                     // process dropping the event
                     unimplemented!();
                 } else if !events.is_none() {
-                    unimplemented!();
+                    dst.push(Event::new(events, node_ref.token));
                 }
             } else {
                 // Place the node timer wheel for later processing
@@ -461,9 +499,9 @@ impl ReadinessQueue {
 
     fn take_ready(&self) -> ReadyList {
         ReadyList {
-            // Relaxed is acceptable here as the underlying `ReadinessNode` is
-            // owned by the thread that is calling `take_ready`.
-            head: ReadyRef::new(self.inner().head_readiness.swap(ptr::null_mut(), Ordering::Relaxed)),
+            // Use `Acquire` ordering to ensure being able to read the latest
+            // values of all other atomic mutations.
+            head: ReadyRef::new(self.inner().head_readiness.swap(ptr::null_mut(), Ordering::Acquire)),
         }
     }
 
@@ -480,24 +518,59 @@ impl ReadinessQueue {
     /// Prepend the given node to the head of the readiness queue. This is done
     /// with relaxed ordering.
     fn prepend_readiness_node(&self, mut node: ReadyRef) {
+        let mut curr_head = self.inner().head_readiness.load(Ordering::Relaxed);
+
         loop {
-            let next = self.inner().head_readiness.load(Ordering::Relaxed);
-
             // Update next pointer
-            node.as_mut().unwrap().next_readiness = ReadyRef::new(next);
+            node.as_mut().unwrap().next_readiness = ReadyRef::new(curr_head);
 
-            if next == self.inner().head_readiness.compare_and_swap(next, node.ptr, Ordering::Relaxed) {
+            // Update the ref, use release ordering to ensure that mutations to
+            // previous atomics are visible if the mutation to the head pointer
+            // is.
+            let next_head = self.inner().head_readiness.compare_and_swap(curr_head, node.ptr, Ordering::Release);
+
+            if curr_head == next_head {
                 return;
             }
+
+            curr_head = next_head;
         }
     }
 
-    fn insert_node_in_timer_wheel(&self, mut node: ReadyRef, tick: Tick) {
-        unimplemented!();
+    fn insert_node_in_timer_wheel(&mut self, mut node: ReadyRef, tick: Tick) {
+        let current_slot = node.as_ref().unwrap().delay
+            .map(|tick| self.tick_to_slot(tick));
+
+        let new_slot = self.tick_to_slot(tick);
+
+        if current_slot == Some(new_slot) {
+            // Nothing to do, already in the correct slot
+            return;
+        }
+
+        let current_head_ptr = current_slot
+            .map(|slot| &mut self.inner_mut().readiness_wheel[slot])
+            .unwrap_or(&mut self.inner_mut().head_all_nodes);
+
+        let node_box = node.as_mut().unwrap().unlink(current_head_ptr);
+        node_box.link(&mut self.inner_mut().readiness_wheel[new_slot]);
     }
 
-    fn remove_node_from_timer_wheel(&self, mut node: ReadyRef) {
-        unimplemented!();
+    fn remove_node_from_timer_wheel(&mut self, mut node: ReadyRef) {
+        let current_slot = node.as_ref().unwrap().delay
+            .map(|tick| self.tick_to_slot(tick));
+
+        if node.as_ref().unwrap().delay == None {
+            // Nothing to do, already in the correct slot
+            return;
+        }
+
+        let current_head_ptr = current_slot
+            .map(|slot| &mut self.inner_mut().readiness_wheel[slot])
+            .unwrap_or(&mut self.inner_mut().head_all_nodes);
+
+        let node_box = node.as_mut().unwrap().unlink(current_head_ptr);
+        node_box.link(&mut self.inner_mut().head_all_nodes);
     }
 
     fn is_empty(&self) -> bool {
@@ -519,6 +592,10 @@ impl ReadinessQueue {
 
         // TODO: safely handle handle wrapping
         Some(self.current_tick() + (delay / self.inner().timer_tick_ms) as usize)
+    }
+
+    fn tick_to_slot(&self, tick: Tick) -> usize {
+        tick & self.inner().mask as usize
     }
 
     fn identical(&self, other: &ReadinessQueue) -> bool {
@@ -551,6 +628,42 @@ impl ReadinessNode {
 
     fn poll_events(&self) -> EventSet {
         self.interest.get() & event::from_usize(self.events.load(Ordering::Relaxed))
+    }
+
+    fn link(mut self: Box<Self>, head: &mut Option<Box<ReadinessNode>>) {
+        assert!(self.next_all_nodes.is_none());
+        assert!(self.prev_all_nodes.is_none());
+
+        self.next_all_nodes = head.take();
+
+        let self_ref = ReadyRef::new(&mut *self as *mut ReadinessNode);
+
+        if let Some(ref mut next) = self.next_all_nodes {
+            next.prev_all_nodes = self_ref;
+        }
+
+        *head = Some(self);
+    }
+
+    fn unlink(&mut self, head: &mut Option<Box<ReadinessNode>>) -> Box<ReadinessNode> {
+        if let Some(ref mut next) = self.next_all_nodes {
+            next.prev_all_nodes = self.prev_all_nodes.clone();
+        }
+
+        let node;
+
+        match self.prev_all_nodes.take().as_mut() {
+            Some(prev) => {
+                node = prev.next_all_nodes.take().unwrap();
+                prev.next_all_nodes = self.next_all_nodes.take();
+            }
+            None => {
+                node = head.take().unwrap();
+                *head = self.next_all_nodes.take();
+            }
+        }
+
+        node
     }
 }
 
@@ -585,7 +698,11 @@ impl ReadyRef {
     }
 
     fn is_some(&self) -> bool {
-        !self.ptr.is_null()
+        !self.is_none()
+    }
+
+    fn is_none(&self) -> bool {
+        self.ptr.is_null()
     }
 
     fn as_ref(&self) -> Option<&ReadinessNode> {
