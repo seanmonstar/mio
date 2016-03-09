@@ -187,16 +187,16 @@ impl<M> NotifyInner<M> {
 }
 
 impl<M> Evented for Notify<M> {
-    fn register(&self, poll: &mut Poll, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()> {
+    fn register(&self, poll: &Poll, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()> {
         assert!(opts.is_edge(), "awakener can only be registered using edge-triggered events");
         self.inner.awaken.register(poll, token, interest, opts)
     }
 
-    fn reregister(&self, _: &mut Poll, _: Token, _: EventSet, _: PollOpt) -> io::Result<()> {
+    fn reregister(&self, _: &Poll, _: Token, _: EventSet, _: PollOpt) -> io::Result<()> {
         panic!("awakener is never reregistered");
     }
 
-    fn deregister(&self, _: &mut Poll) -> io::Result<()> {
+    fn deregister(&self, _: &Poll) -> io::Result<()> {
         panic!("awakener is never deregistered");
     }
 }

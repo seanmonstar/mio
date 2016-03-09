@@ -385,7 +385,7 @@ impl Evented for TcpStream {
                 interest: EventSet, opts: PollOpt) -> io::Result<()> {
         let mut me = self.inner();
         let me = &mut *me;
-        try!(me.iocp.register_socket(&me.socket, poll::selector_mut(poll), token, interest,
+        try!(me.iocp.register_socket(&me.socket, poll::selector(poll), token, interest,
                                      opts));
 
         // If we were connected before being registered process that request
@@ -404,7 +404,7 @@ impl Evented for TcpStream {
         let mut me = self.inner();
         {
             let me = &mut *me;
-            try!(me.iocp.reregister_socket(&me.socket, poll::selector_mut(poll), token,
+            try!(me.iocp.reregister_socket(&me.socket, poll::selector(poll), token,
                                            interest, opts));
         }
         self.post_register(interest, &mut me);
@@ -579,7 +579,7 @@ impl Evented for TcpListener {
                 interest: EventSet, opts: PollOpt) -> io::Result<()> {
         let mut me = self.inner();
         let me = &mut *me;
-        try!(me.iocp.register_socket(&me.socket, poll::selector_mut(poll), token, interest,
+        try!(me.iocp.register_socket(&me.socket, poll::selector(poll), token, interest,
                                      opts));
         self.imp.schedule_accept(me, false);
         Ok(())
@@ -589,7 +589,7 @@ impl Evented for TcpListener {
                   interest: EventSet, opts: PollOpt) -> io::Result<()> {
         let mut me = self.inner();
         let me = &mut *me;
-        try!(me.iocp.reregister_socket(&me.socket, poll::selector_mut(poll), token,
+        try!(me.iocp.reregister_socket(&me.socket, poll::selector(poll), token,
                                        interest, opts));
         self.imp.schedule_accept(me, false);
         Ok(())

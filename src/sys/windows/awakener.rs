@@ -43,7 +43,7 @@ impl Awakener {
 impl Evented for Awakener {
     fn register(&self, poll: &mut Poll, token: Token, _events: EventSet,
                 opts: PollOpt) -> io::Result<()> {
-        try!(self.iocp().associate(poll::selector_mut(poll), token, opts));
+        try!(self.iocp().associate(poll::selector(poll), token, opts));
         Ok(())
     }
 

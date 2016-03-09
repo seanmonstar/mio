@@ -107,7 +107,7 @@ impl<H: Handler> EventLoop<H> {
 
     fn configured(config: Config) -> io::Result<EventLoop<H>> {
         // Create the IO poller
-        let mut poll = try!(Poll::new());
+        let poll = try!(Poll::new());
 
         // Create the timer
         let mut timer = Timer::new(

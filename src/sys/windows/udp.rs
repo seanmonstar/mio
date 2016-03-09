@@ -296,7 +296,7 @@ impl Evented for UdpSocket {
                 Socket::Building(ref b) => b as &AsRawSocket,
                 Socket::Empty => return Err(bad_state()),
             };
-            try!(me.iocp.register_socket(socket, poll::selector_mut(poll), token, interest,
+            try!(me.iocp.register_socket(socket, poll::selector(poll), token, interest,
                                          opts));
         }
         self.post_register(interest, &mut me);
@@ -313,7 +313,7 @@ impl Evented for UdpSocket {
                 Socket::Building(ref b) => b as &AsRawSocket,
                 Socket::Empty => return Err(bad_state()),
             };
-            try!(me.iocp.reregister_socket(socket, poll::selector_mut(poll), token, interest,
+            try!(me.iocp.reregister_socket(socket, poll::selector(poll), token, interest,
                                            opts));
         }
         self.post_register(interest, &mut me);

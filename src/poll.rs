@@ -180,19 +180,19 @@ impl Poll {
         // TODO: Allow config to be passed in
         let config = Config::default();
 
-        let mut poll = Poll {
+        let poll = Poll {
             selector: try!(sys::Selector::new()),
             readiness_queue: try!(ReadinessQueue::new(&config)),
             events: sys::Events::new(),
         };
 
         // Register the notification wakeup FD with the IO poller
-        // try!(poll.register(&poll.readiness_queue.inner().awakener, AWAKEN, EventSet::readable() | EventSet::writable() , PollOpt::edge()));
+        try!(poll.register(&poll.readiness_queue.inner().awakener, AWAKEN, EventSet::readable(), PollOpt::edge()));
 
         Ok(poll)
     }
 
-    pub fn register<E: ?Sized>(&mut self, io: &E, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()>
+    pub fn register<E: ?Sized>(&self, io: &E, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()>
         where E: Evented
     {
         /*
@@ -208,7 +208,7 @@ impl Poll {
         Ok(())
     }
 
-    pub fn reregister<E: ?Sized>(&mut self, io: &E, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()>
+    pub fn reregister<E: ?Sized>(&self, io: &E, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()>
         where E: Evented
     {
         trace!("registering with poller");
@@ -219,7 +219,7 @@ impl Poll {
         Ok(())
     }
 
-    pub fn deregister<E: ?Sized>(&mut self, io: &E) -> io::Result<()>
+    pub fn deregister<E: ?Sized>(&self, io: &E) -> io::Result<()>
         where E: Evented
     {
         trace!("deregistering IO with poller");
@@ -301,10 +301,6 @@ impl<'a> Iterator for Events<'a> {
 
 pub fn selector(poll: &Poll) -> &sys::Selector {
     &poll.selector
-}
-
-pub fn selector_mut(poll: &mut Poll) -> &mut sys::Selector {
-    &mut poll.selector
 }
 
 /*
