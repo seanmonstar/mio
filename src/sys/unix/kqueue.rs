@@ -210,6 +210,10 @@ impl Events {
         }
     }
 
+    pub fn push_event(&mut self, event: Event) {
+        self.events.push(event);
+    }
+
     fn as_slice(&self) -> &[KEvent] {
         unsafe {
             let ptr = (&self.sys_events[..]).as_ptr();

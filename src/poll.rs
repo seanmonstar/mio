@@ -3,7 +3,7 @@
 use {convert, sys, Evented, Token};
 use event::{self, EventSet, Event, PollOpt};
 use time::precise_time_ns;
-use std::{fmt, io, mem, ptr};
+use std::{fmt, io, mem, ptr, usize};
 use std::cell::{Cell, UnsafeCell};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
@@ -77,6 +77,9 @@ struct ReadinessQueue {
 }
 
 struct ReadinessQueueInner {
+    // Used to wake up `Poll` when readiness is set in another thread.
+    awakener: sys::Awakener,
+
     // All readiness nodes are owned by the `Poll` instance and live either in
     // this linked list or in a `readiness_wheel` linked list.
     head_all_nodes: Option<Box<ReadinessNode>>,
@@ -95,6 +98,9 @@ struct ReadinessQueueInner {
 
     // Masks the target tick to get the slot in the wheel
     mask: u64,
+
+    // A fake readiness node used to indicate that `Poll::poll` will block.
+    sleep_token: Box<ReadinessNode>,
 }
 
 struct ReadyList {
@@ -146,6 +152,8 @@ type Tick = usize;
 
 const NODE_QUEUED_FLAG: usize = 1;
 
+const AWAKEN: Token = Token(usize::MAX - 1);
+
 /*
  *
  * ===== Config =====
@@ -172,16 +180,26 @@ impl Poll {
         // TODO: Allow config to be passed in
         let config = Config::default();
 
-        Ok(Poll {
+        let mut poll = Poll {
             selector: try!(sys::Selector::new()),
-            readiness_queue: ReadinessQueue::new(&config),
+            readiness_queue: try!(ReadinessQueue::new(&config)),
             events: sys::Events::new(),
-        })
+        };
+
+        // Register the notification wakeup FD with the IO poller
+        // try!(poll.register(&poll.readiness_queue.inner().awakener, AWAKEN, EventSet::readable() | EventSet::writable() , PollOpt::edge()));
+
+        Ok(poll)
     }
 
     pub fn register<E: ?Sized>(&mut self, io: &E, token: Token, interest: EventSet, opts: PollOpt) -> io::Result<()>
         where E: Evented
     {
+        /*
+         * Undefined behavior:
+         * - Reusing a token with a different `Evented` without deregistering
+         * (or closing) the original `Evented`.
+         */
         trace!("registering with poller");
 
         // Register interests for this socket
@@ -213,8 +231,22 @@ impl Poll {
     }
 
     pub fn poll(&mut self, timeout: Option<Duration>) -> io::Result<usize> {
-        let timeout = timeout.map(|to| convert::millis(to) as usize);
+        let timeout = if !self.readiness_queue.is_empty() {
+            // Never block if the readiness queue has pending events
+            Some(0)
+        } else if !self.readiness_queue.prepare_for_sleep() {
+            Some(0)
+        } else {
+            timeout.map(|to| convert::millis(to) as usize)
+        };
+
+        // First get selector events
         try!(self.selector.select(&mut self.events, timeout));
+
+        // Poll custom event queue
+        self.readiness_queue.poll(&mut self.events);
+
+        // Return number of polled events
         Ok(self.events.len())
     }
 
@@ -314,7 +346,8 @@ impl Registration {
             // the node was dequeued in `poll` and then has the interest
             // changed, which means that the "newest" readiness value is
             // already known by the current thread.
-            self.queue_for_processing(None);
+            let needs_wakeup = self.queue_for_processing(None);
+            debug_assert!(!needs_wakeup, "something funky is going on");
         }
 
         Ok(())
@@ -327,7 +360,7 @@ impl Registration {
         event::from_usize(self.node().events.load(Ordering::Relaxed))
     }
 
-    pub fn set_readiness(&self, ready: EventSet, delay: Duration) {
+    pub fn set_readiness(&self, ready: EventSet, delay: Duration) -> io::Result<()> {
         // First, process args
         let target_tick = self.queue.delay_target_tick(delay);
 
@@ -340,13 +373,20 @@ impl Registration {
         if event::is_empty(ready) {
             // It doesn't make sense to delay an "unset" readiness operation.
             debug_assert!(convert::millis(delay) == 0, "the delay component is ignored when ready set is empty");
-            return;
+            return Ok(());
         }
 
-        self.queue_for_processing(target_tick);
+        let needs_wakeup = self.queue_for_processing(target_tick);
+
+        if needs_wakeup {
+            try!(self.queue.wakeup());
+        }
+
+        Ok(())
     }
 
-    fn queue_for_processing(&self, target_tick: Option<Tick>) {
+    /// Returns true if `Poll` needs to be woken up
+    fn queue_for_processing(&self, target_tick: Option<Tick>) -> bool {
         // Use Relaxed ordering here as this load's ordering doesn't really
         // matter. The `compare_and_swap` below will set the ordering.
         let mut curr = self.node().queued.load(Ordering::Relaxed);
@@ -372,7 +412,9 @@ impl Registration {
         // If the queued flag was not initially set, then the current thread
         // is assigned the responsibility of enqueuing the node for processing.
         if 0 == NODE_QUEUED_FLAG & curr {
-            self.queue.prepend_readiness_node(self.node.clone());
+            self.queue.prepend_readiness_node(self.node.clone())
+        } else {
+            false
         }
     }
 
@@ -395,22 +437,26 @@ impl fmt::Debug for Registration {
  */
 
 impl ReadinessQueue {
-    fn new(config: &Config) -> ReadinessQueue {
+    fn new(config: &Config) -> io::Result<ReadinessQueue> {
         let timer_wheel_size = config.timer_wheel_size.next_power_of_two();
 
-        ReadinessQueue {
+        Ok(ReadinessQueue {
             inner: Arc::new(UnsafeCell::new(ReadinessQueueInner {
+                awakener: try!(sys::Awakener::new()),
                 head_all_nodes: None,
                 head_readiness: AtomicPtr::new(ptr::null_mut()),
                 readiness_wheel: (0..timer_wheel_size).map(|_| None).collect(),
                 timer_tick_ms: convert::millis(config.timer_tick_dur),
                 mask: timer_wheel_size as u64,
                 epoch: precise_time_ns(),
+                // Arguments here don't matter, the node is only used for the
+                // pointer value.
+                sleep_token: Box::new(ReadinessNode::new(Token(0), EventSet::none(), PollOpt::empty())),
             }))
-        }
+        })
     }
 
-    fn poll(&mut self, dst: &mut Vec<Event>) {
+    fn poll(&mut self, dst: &mut sys::Events) {
         let ready = self.take_ready();
         let curr_tick = self.current_tick();
 
@@ -473,7 +519,8 @@ impl ReadinessQueue {
                     // requires a single CAS. Also, `Relaxed` ordering would be
                     // OK here as the prepend only needs to be visible by the
                     // current thread.
-                    self.prepend_readiness_node(node.clone());
+                    let needs_wakeup = self.prepend_readiness_node(node.clone());
+                    debug_assert!(!needs_wakeup, "something funky is going on");
                     break;
                 }
             }
@@ -488,7 +535,7 @@ impl ReadinessQueue {
                     // process dropping the event
                     unimplemented!();
                 } else if !events.is_none() {
-                    dst.push(Event::new(events, node_ref.token));
+                    dst.push_event(Event::new(events, node_ref.token));
                 }
             } else {
                 // Place the node timer wheel for later processing
@@ -497,12 +544,30 @@ impl ReadinessQueue {
         }
     }
 
+    fn wakeup(&self) -> io::Result<()> {
+        self.inner().awakener.wakeup()
+    }
+
+    // Attempts to state to sleeping. This involves changing `head_readiness`
+    // to `sleep_token`. Returns true if `poll` can sleep.
+    fn prepare_for_sleep(&self) -> bool {
+        // Use relaxed as no memory besides the pointer is being sent across
+        // threads. Ordering doesn't matter, only the current value of
+        // `head_readiness`.
+        ptr::null_mut() == self.inner().head_readiness
+            .compare_and_swap(ptr::null_mut(), self.sleep_token(), Ordering::Relaxed)
+    }
+
     fn take_ready(&self) -> ReadyList {
-        ReadyList {
-            // Use `Acquire` ordering to ensure being able to read the latest
-            // values of all other atomic mutations.
-            head: ReadyRef::new(self.inner().head_readiness.swap(ptr::null_mut(), Ordering::Acquire)),
+        // Use `Acquire` ordering to ensure being able to read the latest
+        // values of all other atomic mutations.
+        let mut head = self.inner().head_readiness.swap(ptr::null_mut(), Ordering::Acquire);
+
+        if head == self.sleep_token() {
+            head = ptr::null_mut();
         }
+
+        ReadyList { head: ReadyRef::new(head) }
     }
 
     fn new_readiness_node(&self, token: Token, interest: EventSet, opts: PollOpt) -> ReadyRef {
@@ -516,13 +581,19 @@ impl ReadinessQueue {
     }
 
     /// Prepend the given node to the head of the readiness queue. This is done
-    /// with relaxed ordering.
-    fn prepend_readiness_node(&self, mut node: ReadyRef) {
+    /// with relaxed ordering. Returns true if `Poll` needs to be woken up.
+    fn prepend_readiness_node(&self, mut node: ReadyRef) -> bool {
         let mut curr_head = self.inner().head_readiness.load(Ordering::Relaxed);
 
         loop {
+            let node_next = if curr_head == self.sleep_token() {
+                ptr::null_mut()
+            } else {
+                curr_head
+            };
+
             // Update next pointer
-            node.as_mut().unwrap().next_readiness = ReadyRef::new(curr_head);
+            node.as_mut().unwrap().next_readiness = ReadyRef::new(node_next);
 
             // Update the ref, use release ordering to ensure that mutations to
             // previous atomics are visible if the mutation to the head pointer
@@ -530,7 +601,7 @@ impl ReadinessQueue {
             let next_head = self.inner().head_readiness.compare_and_swap(curr_head, node.ptr, Ordering::Release);
 
             if curr_head == next_head {
-                return;
+                return curr_head == self.sleep_token();
             }
 
             curr_head = next_head;
@@ -596,6 +667,10 @@ impl ReadinessQueue {
 
     fn tick_to_slot(&self, tick: Tick) -> usize {
         tick & self.inner().mask as usize
+    }
+
+    fn sleep_token(&self) -> *mut ReadinessNode {
+        &*self.inner().sleep_token as *const ReadinessNode as *mut ReadinessNode
     }
 
     fn identical(&self, other: &ReadinessQueue) -> bool {
