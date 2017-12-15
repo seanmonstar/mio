@@ -497,6 +497,34 @@ fn multiple_writes_immediate_success() {
 }
 
 #[test]
+fn drop_cancels_interest_and_shuts_down() {
+    let l = net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+
+    let t = thread::spawn(move || {
+        let mut s = l.accept().unwrap().0;
+        s.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        s.read(&mut [0; 16]).unwrap();
+    });
+
+    let poll = Poll::new().unwrap();
+    let mut s = TcpStream::connect(&addr).unwrap();
+
+    poll.register(&s, Token(1), Ready::readable(), PollOpt::edge()).unwrap();
+
+    let mut b = [0; 1024];
+    match s.read(&mut b) {
+        Ok(_) => panic!("unexpected ok"),
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (),
+        Err(e) => panic!("unexpected error: {:?}", e),
+    }
+    drop(s);
+
+    t.join().unwrap();
+
+}
+
+#[test]
 fn connection_reset_by_peer() {
     let poll = Poll::new().unwrap();
     let mut events = Events::with_capacity(16);
