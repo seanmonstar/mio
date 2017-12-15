@@ -51,6 +51,20 @@ impl<T> FromRawArc<T> {
         // crucial reason this currently exists.
         FromRawArc { _inner: ptr as *mut Inner<T> }
     }
+
+    pub fn cnt(&self) -> usize {
+        unsafe {
+            (*self._inner).cnt.load(Ordering::SeqCst)
+        }
+    }
+    /*
+    pub unsafe fn decrement(&self) {
+        // This will decrement the reference count without dropping.
+        // This is the counterpart to `mem::forget(self.clone())`, but
+        // should be needed only very rarely.
+        assert!((*self._inner).cnt.fetch_sub(1, Ordering::Release) != 1)
+    }
+    */
 }
 
 impl<T> Clone for FromRawArc<T> {

@@ -637,6 +637,17 @@ impl Drop for TcpStream {
                     trace!("cancelling active TCP read");
                     drop(super::cancel(&self.imp.inner.socket,
                                        &self.imp.inner.read));
+                    if !::std::thread::panicking() {
+                        assert_eq!(self.imp.inner.cnt(), 1);
+                    }
+                    /*
+
+                    // If there is a pending read, we will have cloned
+                    // the FromRawArc. Cancelling the operation will not
+                    // trigger the `read_done` callback, and so the ref
+                    // count will never be recaptured. We do so manually.
+                    self.imp.inner.decrement();
+                    */
                 }
                 State::Ready(_) | State::Error(_) => {}
             }
