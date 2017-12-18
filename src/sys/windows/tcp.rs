@@ -646,14 +646,12 @@ impl Drop for TcpStream {
                         trace!("TcpStream::drop; count={}, write_pending={}", self.imp.inner.cnt(), write_pending);
                         //assert_eq!(self.imp.inner.cnt(), 1 + write_pending);
                     //}
-                    /*
 
                     // If there is a pending read, we will have cloned
                     // the FromRawArc. Cancelling the operation will not
                     // trigger the `read_done` callback, and so the ref
                     // count will never be recaptured. We do so manually.
                     self.imp.inner.decrement();
-                    */
                 }
                 State::Ready(_) | State::Error(_) => {}
             }
