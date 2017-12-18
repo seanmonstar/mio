@@ -530,7 +530,11 @@ fn drop_cancels_interest_and_shuts_down() {
         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => (),
         Err(e) => panic!("unexpected error: {:?}", e),
     }
+
+    poll.deregister(&s).unwrap();
     drop(s);
+
+    poll.poll(&mut events, Some(Duration::from_millis(1))).unwrap();
 
     t.join().unwrap();
 

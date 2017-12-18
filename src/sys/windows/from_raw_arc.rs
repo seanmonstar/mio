@@ -52,6 +52,7 @@ impl<T> FromRawArc<T> {
         FromRawArc { _inner: ptr as *mut Inner<T> }
     }
 
+    /*
     pub unsafe fn decrement(&self) {
         trace!("decrement ptr={:p}", self._inner);
         // This will decrement the reference count without dropping.
@@ -59,6 +60,7 @@ impl<T> FromRawArc<T> {
         // should be needed only very rarely.
         assert!((*self._inner).cnt.fetch_sub(1, Ordering::Release) != 1)
     }
+    */
 }
 
 impl<T> Clone for FromRawArc<T> {

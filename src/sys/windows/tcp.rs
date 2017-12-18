@@ -645,7 +645,7 @@ impl Drop for TcpStream {
                         // the FromRawArc. Cancelling the operation will not
                         // trigger the `read_done` callback, and so the ref
                         // count will never be recaptured. We do so manually.
-                        self.imp.inner.decrement();
+                        //self.imp.inner.decrement();
                     }
                 }
                 State::Ready(_) | State::Error(_) => {}
