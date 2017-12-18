@@ -632,13 +632,18 @@ impl Drop for TcpStream {
         // Note that "Empty" here may mean that a connect is pending, so we
         // cancel even if that happens as well.
         unsafe {
-            match self.inner().read {
+            let inner = self.inner();
+            let write_pending = match inner.write {
+                State::Pending(_) => 1,
+                _ => 0,
+            };
+            match inner.read {
                 State::Pending(_) | State::Empty => {
                     trace!("cancelling active TCP read");
                     drop(super::cancel(&self.imp.inner.socket,
                                        &self.imp.inner.read));
                     if !::std::thread::panicking() {
-                        assert_eq!(self.imp.inner.cnt(), 1);
+                        assert_eq!(self.imp.inner.cnt(), 1 + write_pending);
                     }
                     /*
 
