@@ -643,7 +643,7 @@ impl Drop for TcpStream {
                     let canceled = super::cancel(&self.imp.inner.socket,
                                        &self.imp.inner.read);
 
-                    trace!("TcpStream::drop; canceled = {:?}, cnt = {}, write_pending = {}", canceled, self.imp.inner.cnt(), write_pending);
+                    debug!("TcpStream::drop; canceled = {:?}, cnt = {}, write_pending = {}", canceled, self.imp.inner.cnt(), write_pending);
                     // If there is a pending read, we will have cloned
                     // the FromRawArc. Cancelling the operation will not
                     // trigger the `read_done` callback, and so the ref
