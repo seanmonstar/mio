@@ -17,6 +17,5 @@ build: false
 test_script:
   # Ensure that the build works without default features
   - cargo build --no-default-features
-  - SET RUST_LOG=mio=trace
-  - cargo test drop_cancels_interest_and_shuts_down
+  - cargo test
     # - cargo test --no-default-features
