@@ -17,6 +17,6 @@ build: false
 test_script:
   # Ensure that the build works without default features
   - cargo build --no-default-features
-  - SET RUST_LOG=mio
+  - SET RUST_LOG=mio::sys::windows::tcp,mio::sys::windows::from_raw_arc
   - cargo test
     # - cargo test --no-default-features
