@@ -512,7 +512,17 @@ fn drop_cancels_interest_and_shuts_down() {
     let poll = Poll::new().unwrap();
     let mut s = TcpStream::connect(&addr).unwrap();
 
-    poll.register(&s, Token(1), Ready::readable(), PollOpt::edge()).unwrap();
+    poll.register(&s, Token(1), Ready::readable() | Ready::writable(), PollOpt::edge()).unwrap();
+    let mut events = Events::with_capacity(16);
+    'outer: loop {
+        poll.poll(&mut events, None).unwrap();
+        for event in &events {
+            if event.token() == Token(1) {
+                // connected
+                break 'outer;
+            }
+        }
+    }
 
     let mut b = [0; 1024];
     match s.read(&mut b) {
