@@ -633,22 +633,18 @@ impl Drop for TcpStream {
         // cancel even if that happens as well.
         unsafe {
             let inner = self.inner();
-            let write_pending = match inner.write {
-                State::Pending(_) => 1,
-                _ => 0,
-            };
             match inner.read {
                 State::Pending(_) | State::Empty => {
                     trace!("cancelling active TCP read");
-                    let canceled = super::cancel(&self.imp.inner.socket,
-                                       &self.imp.inner.read);
+                    let canceled =  = super::cancel(&self.imp.inner.socket,
+                                                    &self.imp.inner.read);
 
-                    debug!("TcpStream::drop; canceled = {:?}, cnt = {}, write_pending = {}", canceled, self.imp.inner.cnt(), write_pending);
-                    // If there is a pending read, we will have cloned
-                    // the FromRawArc. Cancelling the operation will not
-                    // trigger the `read_done` callback, and so the ref
-                    // count will never be recaptured. We do so manually.
-                    if self.imp.inner.cnt() - write_pending == 2 {
+                    if let Ok(()) = canceled {
+                        //debug!("TcpStream::drop; ", canceled, self.imp.inner.cnt(), write_pending);
+                        // If there is a pending read, we will have cloned
+                        // the FromRawArc. Cancelling the operation will not
+                        // trigger the `read_done` callback, and so the ref
+                        // count will never be recaptured. We do so manually.
                         self.imp.inner.decrement();
                     }
                 }

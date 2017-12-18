@@ -52,13 +52,8 @@ impl<T> FromRawArc<T> {
         FromRawArc { _inner: ptr as *mut Inner<T> }
     }
 
-    pub fn cnt(&self) -> usize {
-        unsafe {
-            (*self._inner).cnt.load(Ordering::SeqCst)
-        }
-    }
-
     pub unsafe fn decrement(&self) {
+        trace!("decrement ptr={:p}", self._inner);
         // This will decrement the reference count without dropping.
         // This is the counterpart to `mem::forget(self.clone())`, but
         // should be needed only very rarely.
@@ -72,9 +67,9 @@ impl<T> Clone for FromRawArc<T> {
         // is that you need synchronization to communicate this increment to
         // another thread, so this itself doesn't need to be synchronized.
         unsafe {
-            let cnt = (*self._inner).cnt.fetch_add(1, Ordering::Relaxed);
-            trace!("FromRawArc::clone; new cnt = {}", cnt + 1);
+            (*self._inner).cnt.fetch_add(1, Ordering::Relaxed);
         }
+        trace!("clone ptr={:p}", self._inner);
         FromRawArc { _inner: self._inner }
     }
 }
@@ -89,11 +84,10 @@ impl<T> Deref for FromRawArc<T> {
 
 impl<T> Drop for FromRawArc<T> {
     fn drop(&mut self) {
+        trace!("drop ptr={:p}", self._inner);
         unsafe {
             // Atomic orderings lifted from the standard library
-            let cnt = (*self._inner).cnt.fetch_sub(1, Ordering::Release);
-            trace!("FromRawArc::drop; new cnt = {}", cnt - 1);
-            if cnt != 1 {
+            if (*self._inner).cnt.fetch_sub(1, Ordering::Release) != 1 {
                 return
             }
             atomic::fence(Ordering::Acquire);
