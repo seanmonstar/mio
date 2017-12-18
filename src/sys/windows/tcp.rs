@@ -531,6 +531,7 @@ fn read_done(status: &OVERLAPPED_ENTRY) {
     let mut me = me2.inner();
     match mem::replace(&mut me.read, State::Empty) {
         State::Pending(()) => {
+            debug!("read_done; ptr={:p}", me2.inner.ptr());
             trace!("finished a read: {}", status.bytes_transferred());
             assert_eq!(status.bytes_transferred(), 0);
             me.read = State::Ready(());
@@ -640,6 +641,7 @@ impl Drop for TcpStream {
                                                  &self.imp.inner.read);
 
                     if let Ok(()) = canceled {
+                        debug!("TcpStream read cancelled, ptr = {:p}", self.imp.inner.ptr());
                         //debug!("TcpStream::drop; ", canceled, self.imp.inner.cnt(), write_pending);
                         // If there is a pending read, we will have cloned
                         // the FromRawArc. Cancelling the operation will not

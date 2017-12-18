@@ -52,6 +52,10 @@ impl<T> FromRawArc<T> {
         FromRawArc { _inner: ptr as *mut Inner<T> }
     }
 
+    pub fn ptr(&self) -> *mut Inner<T> {
+        self._inner
+    }
+
     /*
     pub unsafe fn decrement(&self) {
         trace!("decrement ptr={:p}", self._inner);
