@@ -498,13 +498,15 @@ fn multiple_writes_immediate_success() {
 
 #[test]
 fn drop_cancels_interest_and_shuts_down() {
+    use env_logger;
+    let _ = env_logger::init();
     let l = net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
 
     let t = thread::spawn(move || {
-        let mut s = l.accept().unwrap().0;
-        s.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
-        s.read(&mut [0; 16]).unwrap();
+        let mut s = l.accept().expect("accept").0;
+        s.set_read_timeout(Some(Duration::from_secs(5))).expect("set_read_timeout");
+        s.read(&mut [0; 16]).expect("read");
     });
 
     let poll = Poll::new().unwrap();
