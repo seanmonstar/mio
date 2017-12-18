@@ -31,7 +31,7 @@ unsafe impl<T: Sync + Send> Send for FromRawArc<T> { }
 unsafe impl<T: Sync + Send> Sync for FromRawArc<T> { }
 
 #[repr(C)]
-struct Inner<T> {
+pub struct Inner<T> {
     data: T,
     cnt: AtomicUsize,
 }
