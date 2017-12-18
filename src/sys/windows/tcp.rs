@@ -636,8 +636,8 @@ impl Drop for TcpStream {
             match inner.read {
                 State::Pending(_) | State::Empty => {
                     trace!("cancelling active TCP read");
-                    let canceled =  = super::cancel(&self.imp.inner.socket,
-                                                    &self.imp.inner.read);
+                    let canceled = super::cancel(&self.imp.inner.socket,
+                                                 &self.imp.inner.read);
 
                     if let Ok(()) = canceled {
                         //debug!("TcpStream::drop; ", canceled, self.imp.inner.cnt(), write_pending);
