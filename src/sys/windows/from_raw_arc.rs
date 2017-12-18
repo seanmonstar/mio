@@ -73,7 +73,8 @@ impl<T> Clone for FromRawArc<T> {
         // is that you need synchronization to communicate this increment to
         // another thread, so this itself doesn't need to be synchronized.
         unsafe {
-            (*self._inner).cnt.fetch_add(1, Ordering::Relaxed);
+            let cnt = (*self._inner).cnt.fetch_add(1, Ordering::Relaxed);
+            trace!("FromRawArc::clone; new cnt = {}", cnt + 1);
         }
         FromRawArc { _inner: self._inner }
     }
@@ -91,7 +92,9 @@ impl<T> Drop for FromRawArc<T> {
     fn drop(&mut self) {
         unsafe {
             // Atomic orderings lifted from the standard library
-            if (*self._inner).cnt.fetch_sub(1, Ordering::Release) != 1 {
+            let cnt = (*self._inner).cnt.fetch_sub(1, Ordering::Release);
+            trace!("FromRawArc::drop; new cnt = {}", cnt - 1);
+            if cnt != 1 {
                 return
             }
             atomic::fence(Ordering::Acquire);
